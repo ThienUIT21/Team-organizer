@@ -3,63 +3,18 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 import sqlite3
+import hashlib
 
-# --- 1. AUTHENTICATION MODULE ---
-def check_login():
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-
-    if st.session_state.authenticated:
-        return True
-
-    # Login UI
-    st.markdown("<h2 style='text-align: center;'>🔒 Internal System Login</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray;'>Please sign in to access your workspace</p>", unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        with st.form("login_form"):
-            username = st.text_input("Username:")
-            password = st.text_input("Password:", type="password")
-            submit = st.form_submit_button("Sign In", use_container_width=True)
-
-            if submit:
-                # Retrieve accounts from Streamlit Secrets or fallback for local testing
-                valid_users = st.secrets.get("users", {
-                    "admin": "admin@123",
-                    "thien": "password2024"
-                })
-
-                if username in valid_users and valid_users[username] == password:
-                    st.session_state.authenticated = True
-                    st.session_state.current_user = username
-                    st.success("Signed in successfully!")
-                    st.rerun()
-                else:
-                    st.error("❌ Invalid username or password!")
-
-    return False
-
-# Stop execution if user is not authenticated
-if not check_login():
-    st.stop()
-
-# =====================================================================
-# MAIN APPLICATION (RUNS ONLY AFTER LOGIN)
-# =====================================================================
-
-# Auto-refresh interval (Real-time sync every 3 seconds)
-try:
-    from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=3000, key="datarefresh")
-except ImportError:
-    pass
-
-st.set_page_config(page_title="Project & Task Management System", page_icon="🚀", layout="wide")
+# Cấu hình trang web
+st.set_page_config(page_title="Project & Task Management", page_icon="🚀", layout="wide")
 
 DB_FILE = "project_data.db"
 
-# --- DATABASE SETUP ---
+# --- HÀM MÃ HÓA MẬT KHẨU (SHA-256) ---
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# --- HÀM KẾT NỐI VÀ KHỞI TẠO CƠ SỞ DỮ LIỆU ---
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -68,14 +23,17 @@ def get_db_connection():
 def init_db():
     with get_db_connection() as conn:
         cursor = conn.cursor()
+        # Bảng Users (chứa cả thông tin đăng nhập và thành viên)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL,
-                role TEXT,
-                status TEXT
+                password_hash TEXT NOT NULL,
+                role TEXT DEFAULT 'Member',
+                status TEXT DEFAULT 'Online'
             )
         ''')
+        # Bảng Tasks
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,37 +45,123 @@ def init_db():
         ''')
         conn.commit()
 
+        # Tạo sẵn tài khoản Admin mặc định nếu database còn trống
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
-            cursor.executemany("INSERT INTO users (name, role, status) VALUES (?, ?, ?)", [
-                ("Alex Johnson", "Manager", "Online"),
-                ("Sarah Connor", "Member", "Busy")
+            default_admin_pw = hash_password("admin123")
+            default_member_pw = hash_password("123456")
+            cursor.executemany("INSERT INTO users (name, password_hash, role, status) VALUES (?, ?, ?, ?)", [
+                ("Admin", default_admin_pw, "Admin", "Online"),
+                ("Alex Johnson", default_member_pw, "Manager", "Online"),
+                ("Sarah Connor", default_member_pw, "Member", "Busy")
             ])
             cursor.executemany("INSERT INTO tasks (title, assignee, priority, status) VALUES (?, ?, ?, ?)", [
-                ("Database Architecture Design", "Alex Johnson", "High", "Done"),
-                ("Build User Authentication", "Sarah Connor", "Urgent", "In Progress"),
-                ("Write API Documentation", "Sarah Connor", "Low", "To-do")
+                ("Design Database Architecture", "Alex Johnson", "High", "Done"),
+                ("Implement Authentication", "Sarah Connor", "Urgent", "In Progress"),
+                ("Write Documentation", "Sarah Connor", "Low", "To-do")
             ])
             conn.commit()
 
 init_db()
 
+# --- CÁC HÀM XỬ LÝ AUTHENTICATION ---
+def authenticate_user(username, password):
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE name = ? AND password_hash = ?", (username, hash_password(password)))
+        return cursor.fetchone()
+
+def register_user(username, password, role):
+    with get_db_connection() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO users (name, password_hash, role, status) VALUES (?, ?, ?, 'Online')",
+                (username, hash_password(password), role)
+            )
+            conn.commit()
+            return True, "Account registered successfully! Please sign in."
+        except sqlite3.IntegrityError:
+            return False, "Username already exists! Please choose another one."
+
+# --- GIAO DIỆN ĐĂNG NHẬP / ĐĂNG KÝ (SIGN IN / SIGN UP) ---
+def render_auth_page():
+    st.markdown("<h2 style='text-align: center;'>🔐 Workspace Access</h2>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        tab_signin, tab_signup = st.tabs(["🔑 Sign In", "📝 Sign Up"])
+
+        # TAB 1: SIGN IN
+        with tab_signin:
+            with st.form("signin_form"):
+                username = st.text_input("Username:")
+                password = st.text_input("Password:", type="password")
+                submit_signin = st.form_submit_button("Sign In", use_container_width=True)
+
+                if submit_signin:
+                    if not username.strip() or not password.strip():
+                        st.error("Please provide both username and password!")
+                    else:
+                        user = authenticate_user(username.strip(), password.strip())
+                        if user:
+                            st.session_state.authenticated = True
+                            st.session_state.current_user = user["name"]
+                            st.session_state.current_role = user["role"]
+                            st.success("Signed in successfully!")
+                            st.rerun()
+                        else:
+                            st.error("Invalid username or password!")
+
+        # TAB 2: SIGN UP
+        with tab_signup:
+            with st.form("signup_form"):
+                new_username = st.text_input("Choose a Username:")
+                new_password = st.text_input("Create Password:", type="password")
+                confirm_password = st.text_input("Confirm Password:", type="password")
+                role = st.selectbox("Role:", ["Member", "Manager", "Guest"])
+                submit_signup = st.form_submit_button("Create Account", use_container_width=True)
+
+                if submit_signup:
+                    if not new_username.strip() or not new_password.strip():
+                        st.error("Username and password cannot be empty!")
+                    elif len(new_password) < 6:
+                        st.error("Password must be at least 6 characters long!")
+                    elif new_password != confirm_password:
+                        st.error("Passwords do not match!")
+                    else:
+                        success, msg = register_user(new_username.strip(), new_password.strip(), role)
+                        if success:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+
+# Kiểm tra trạng thái phiên làm việc
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    render_auth_page()
+    st.stop()  # Chặn không cho tải dữ liệu phía dưới nếu chưa đăng nhập
+
+# =====================================================================
+# NỘI DUNG ỨNG DỤNG SAU KHI ĐĂNG NHẬP THÀNH CÔNG
+# =====================================================================
+
+# Tự động làm mới Real-time mỗi 3 giây
+try:
+    from streamlit_autorefresh import st_autorefresh
+    st_autorefresh(interval=3000, key="datarefresh")
+except ImportError:
+    pass
+
+# --- CÁC HÀM XỬ LÝ DỮ LIỆU ---
 def get_all_users():
     with get_db_connection() as conn:
-        return pd.read_sql("SELECT * FROM users", conn)
+        return pd.read_sql("SELECT id, name, role, status FROM users", conn)
 
 def get_all_tasks():
     with get_db_connection() as conn:
         return pd.read_sql("SELECT * FROM tasks", conn)
-
-def add_user(name, role, status):
-    with get_db_connection() as conn:
-        try:
-            conn.execute("INSERT INTO users (name, role, status) VALUES (?, ?, ?)", (name, role, status))
-            conn.commit()
-            return True
-        except sqlite3.IntegrityError:
-            return False
 
 def delete_user(name):
     with get_db_connection() as conn:
@@ -138,13 +182,15 @@ def update_task_status(task_id, new_status):
         conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (new_status, task_id))
         conn.commit()
 
-# --- SIDEBAR NAVIGATION ---
+# --- THANH MENU BÊN TRÁI (SIDEBAR) ---
 st.sidebar.title("🏢 Workspace")
 st.sidebar.caption("🟢 Real-time sync active")
-st.sidebar.write(f"👤 Signed in as: **{st.session_state.get('current_user', 'User')}**")
+st.sidebar.write(f"👤 User: **{st.session_state.get('current_user')}** ({st.session_state.get('current_role')})")
 
 if st.sidebar.button("🚪 Sign Out"):
     st.session_state.authenticated = False
+    st.session_state.current_user = None
+    st.session_state.current_role = None
     st.rerun()
 
 st.sidebar.divider()
@@ -157,137 +203,4 @@ menu = st.sidebar.radio(
 df_users = get_all_users()
 df_tasks = get_all_tasks()
 
-# --- 1. MODULE: TASK MANAGEMENT ---
-if menu == "📋 Task Management":
-    st.title("📋 Project & Task Management")
-    
-    with st.expander("➕ Create New Task (Click to expand)"):
-        with st.form("new_task_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                title = st.text_input("Task Title:")
-                user_list = df_users["name"].tolist() if not df_users.empty else ["Unassigned"]
-                assignee = st.selectbox("Assignee:", user_list)
-            with col2:
-                priority = st.selectbox("Priority:", ["Low", "Medium", "High", "Urgent"])
-                deadline = st.date_input("Deadline:")
-                
-            submitted = st.form_submit_button("Save Task")
-            if submitted:
-                if title.strip():
-                    add_task(title.strip(), assignee, priority)
-                    st.success(f"Task created: {title}")
-                    st.rerun()
-                else:
-                    st.error("Please enter a task title!")
-
-    st.subheader("Kanban Board View")
-    col_todo, col_inprog, col_done = st.columns(3)
-
-    with col_todo:
-        st.info("📌 TO-DO")
-        todo_tasks = df_tasks[df_tasks["status"] == "To-do"]
-        for _, t in todo_tasks.iterrows():
-            st.markdown(f"**{t['title']}**\n- 👤 {t['assignee']}\n- 🚨 Priority: {t['priority']}")
-            if st.button("Start ➡️", key=f"start_{t['id']}"):
-                update_task_status(t['id'], "In Progress")
-                st.rerun()
-
-    with col_inprog:
-        st.warning("⏳ IN PROGRESS")
-        inprog_tasks = df_tasks[df_tasks["status"] == "In Progress"]
-        for _, t in inprog_tasks.iterrows():
-            st.markdown(f"**{t['title']}**\n- 👤 {t['assignee']}\n- 🚨 Priority: {t['priority']}")
-            if st.button("Complete ✅", key=f"done_{t['id']}"):
-                update_task_status(t['id'], "Done")
-                st.rerun()
-
-    with col_done:
-        st.success("🎉 DONE")
-        done_tasks = df_tasks[df_tasks["status"] == "Done"]
-        for _, t in done_tasks.iterrows():
-            st.markdown(f"**~{t['title']}~**\n- 👤 {t['assignee']}")
-
-# --- 2. MODULE: TEAM & MEMBERS ---
-elif menu == "👤 Team & Members":
-    st.title("👤 Team & User Management")
-    col_add, col_del = st.columns(2)
-    
-    with col_add:
-        with st.expander("➕ Add New Member", expanded=True):
-            with st.form("add_user_form"):
-                u_name = st.text_input("Full Name:")
-                u_role = st.selectbox("Role:", ["Admin", "Manager", "Member", "Guest"])
-                u_status = st.selectbox("Status:", ["Online", "Offline", "Busy"])
-                
-                if st.form_submit_button("Add Member"):
-                    if u_name.strip():
-                        if add_user(u_name.strip(), u_role, u_status):
-                            st.success(f"Added member: {u_name}")
-                            st.rerun()
-                        else:
-                            st.error("This member already exists!")
-                    else:
-                        st.error("Please enter a name!")
-
-    with col_del:
-        with st.expander("🗑️ Delete Member", expanded=True):
-            if not df_users.empty:
-                user_to_delete = st.selectbox("Select member to delete:", df_users["name"].tolist())
-                st.warning(f"⚠️ Tasks assigned to **{user_to_delete}** will be set to 'Unassigned'.")
-                
-                if st.button("Delete this member", type="primary"):
-                    delete_user(user_to_delete)
-                    st.success(f"Deleted '{user_to_delete}' successfully!")
-                    st.rerun()
-            else:
-                st.info("No members found.")
-
-    st.divider()
-    st.subheader("Current Team Roster:")
-    if not df_users.empty:
-        st.dataframe(df_users, use_container_width=True)
-    else:
-        st.write("No members in database.")
-
-# --- 3. MODULE: REPORTS & ANALYTICS ---
-elif menu == "📊 Reports & Analytics":
-    st.title("📊 Performance & Analytics")
-    if not df_tasks.empty:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Tasks", len(df_tasks))
-        m2.metric("Completed Tasks", len(df_tasks[df_tasks["status"] == "Done"]))
-        m3.metric("Tasks In Progress", len(df_tasks[df_tasks["status"] == "In Progress"]))
-
-        st.divider()
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Task Completion Status")
-            fig_pie = px.pie(df_tasks, names="status", title="Task Status Ratio", hole=0.4)
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-        with col2:
-            st.subheader("Workload by Member")
-            fig_bar = px.bar(df_tasks, x="assignee", color="status", title="Assigned Tasks per Member")
-            st.plotly_chart(fig_bar, use_container_width=True)
-    else:
-        st.info("No task data available for reports.")
-
-# --- 4. MODULE: TIME TRACKER ---
-elif menu == "⏱️ Time Tracker":
-    st.title("⏱️ Time Tracking")
-    task_list = df_tasks["title"].tolist() if not df_tasks.empty else []
-    if task_list:
-        selected_task = st.selectbox("Select task to work on:", task_list)
-        col_btn1, col_btn2 = st.columns([1, 4])
-        with col_btn1:
-            start = st.button("▶️ START TIMER")
-        with col_btn2:
-            stop = st.button("⏹️ STOP TIMER")
-            
-        if start:
-            st.success(f"Timer started for: **{selected_task}** at {datetime.now().strftime('%H:%M:%S')}")
-        if stop:
-            st.info("Work time saved successfully!")
-    else:
-        st.info("Please create at least one task before tracking time.")
+# --- 1. MODULE:
