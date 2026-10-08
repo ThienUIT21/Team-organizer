@@ -4,22 +4,63 @@ import plotly.express as px
 from datetime import datetime
 import sqlite3
 
-# Cài đặt tự động làm mới (Auto-refresh)
+# --- 1. AUTHENTICATION MODULE ---
+def check_login():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if st.session_state.authenticated:
+        return True
+
+    # Login UI
+    st.markdown("<h2 style='text-align: center;'>🔒 Internal System Login</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray;'>Please sign in to access your workspace</p>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        with st.form("login_form"):
+            username = st.text_input("Username:")
+            password = st.text_input("Password:", type="password")
+            submit = st.form_submit_button("Sign In", use_container_width=True)
+
+            if submit:
+                # Retrieve accounts from Streamlit Secrets or fallback for local testing
+                valid_users = st.secrets.get("users", {
+                    "admin": "admin@123",
+                    "thien": "password2024"
+                })
+
+                if username in valid_users and valid_users[username] == password:
+                    st.session_state.authenticated = True
+                    st.session_state.current_user = username
+                    st.success("Signed in successfully!")
+                    st.rerun()
+                else:
+                    st.error("❌ Invalid username or password!")
+
+    return False
+
+# Stop execution if user is not authenticated
+if not check_login():
+    st.stop()
+
+# =====================================================================
+# MAIN APPLICATION (RUNS ONLY AFTER LOGIN)
+# =====================================================================
+
+# Auto-refresh interval (Real-time sync every 3 seconds)
 try:
     from streamlit_autorefresh import st_autorefresh
-    # Tự động tải lại trang mỗi 3 giây (3000ms) để đồng bộ dữ liệu Real-time
     st_autorefresh(interval=3000, key="datarefresh")
 except ImportError:
     pass
 
-# Cấu hình trang web
-st.set_page_config(page_title="Hệ thống Quản lý Dự án Realtime", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="Project & Task Management System", page_icon="🚀", layout="wide")
 
 DB_FILE = "project_data.db"
 
-# --- HÀM KẾT NỐI VÀ KHỞI TẠO CƠ SỞ DỮ LIỆU ---
+# --- DATABASE SETUP ---
 def get_db_connection():
-    # timeout=10 để tránh lỗi tranh chấp khi nhiều người ghi dữ liệu cùng lúc
     conn = sqlite3.connect(DB_FILE, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
@@ -27,7 +68,6 @@ def get_db_connection():
 def init_db():
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        # Bảng thành viên
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +76,6 @@ def init_db():
                 status TEXT
             )
         ''')
-        # Bảng công việc
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,24 +86,22 @@ def init_db():
             )
         ''')
         conn.commit()
-        
-        # Thêm dữ liệu mẫu nếu bảng users rỗng
+
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
             cursor.executemany("INSERT INTO users (name, role, status) VALUES (?, ?, ?)", [
-                ("Nguyễn Văn A", "Manager", "Online"),
-                ("Trần Thị B", "Member", "Busy")
+                ("Alex Johnson", "Manager", "Online"),
+                ("Sarah Connor", "Member", "Busy")
             ])
             cursor.executemany("INSERT INTO tasks (title, assignee, priority, status) VALUES (?, ?, ?, ?)", [
-                ("Thiết kế cơ sở dữ liệu", "Nguyễn Văn A", "High", "Done"),
-                ("Xây dựng tính năng Đăng nhập", "Trần Thị B", "Urgent", "In Progress"),
-                ("Viết tài liệu hướng dẫn (Wiki)", "Trần Thị B", "Low", "To-do")
+                ("Database Architecture Design", "Alex Johnson", "High", "Done"),
+                ("Build User Authentication", "Sarah Connor", "Urgent", "In Progress"),
+                ("Write API Documentation", "Sarah Connor", "Low", "To-do")
             ])
             conn.commit()
 
 init_db()
 
-# --- CÁC HÀM XỬ LÝ DỮ LIỆU ---
 def get_all_users():
     with get_db_connection() as conn:
         return pd.read_sql("SELECT * FROM users", conn)
@@ -84,10 +121,8 @@ def add_user(name, role, status):
 
 def delete_user(name):
     with get_db_connection() as conn:
-        # Xóa user
         conn.execute("DELETE FROM users WHERE name = ?", (name,))
-        # Cập nhật các task của user đó sang 'Chưa phân công'
-        conn.execute("UPDATE tasks SET assignee = 'Chưa phân công' WHERE assignee = ?", (name,))
+        conn.execute("UPDATE tasks SET assignee = 'Unassigned' WHERE assignee = ?", (name,))
         conn.commit()
 
 def add_task(title, assignee, priority):
@@ -103,152 +138,156 @@ def update_task_status(task_id, new_status):
         conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (new_status, task_id))
         conn.commit()
 
-# --- THANH MENU BÊN TRÁI (SIDEBAR) ---
-st.sidebar.title("🏢 Không gian làm việc")
-st.sidebar.caption("🟢 Dữ liệu đang được đồng bộ Real-time")
+# --- SIDEBAR NAVIGATION ---
+st.sidebar.title("🏢 Workspace")
+st.sidebar.caption("🟢 Real-time sync active")
+st.sidebar.write(f"👤 Signed in as: **{st.session_state.get('current_user', 'User')}**")
+
+if st.sidebar.button("🚪 Sign Out"):
+    st.session_state.authenticated = False
+    st.rerun()
+
+st.sidebar.divider()
+
 menu = st.sidebar.radio(
-    "Điều hướng tính năng:",
-    ["📋 Quản lý Công việc (Tasks)", "👤 Thành viên & Hồ sơ", "📊 Báo cáo & Thống kê", "⏱️ Đếm giờ làm việc"]
+    "Navigation:",
+    ["📋 Task Management", "👤 Team & Members", "📊 Reports & Analytics", "⏱️ Time Tracker"]
 )
 
-# Lấy dữ liệu mới nhất từ CSDL
 df_users = get_all_users()
 df_tasks = get_all_tasks()
 
-# --- 1. MODULE: QUẢN LÝ CÔNG VIỆC ---
-if menu == "📋 Quản lý Công việc (Tasks)":
-    st.title("📋 Quản trị Công việc & Dự án")
+# --- 1. MODULE: TASK MANAGEMENT ---
+if menu == "📋 Task Management":
+    st.title("📋 Project & Task Management")
     
-    with st.expander("➕ Tạo công việc mới (Bấm để mở)"):
+    with st.expander("➕ Create New Task (Click to expand)"):
         with st.form("new_task_form"):
             col1, col2 = st.columns(2)
             with col1:
-                title = st.text_input("Tên công việc:")
-                user_list = df_users["name"].tolist() if not df_users.empty else ["Chưa phân công"]
-                assignee = st.selectbox("Giao cho (Assignee):", user_list)
+                title = st.text_input("Task Title:")
+                user_list = df_users["name"].tolist() if not df_users.empty else ["Unassigned"]
+                assignee = st.selectbox("Assignee:", user_list)
             with col2:
-                priority = st.selectbox("Mức độ ưu tiên:", ["Low", "Medium", "High", "Urgent"])
-                deadline = st.date_input("Hạn chót (Deadline):")
+                priority = st.selectbox("Priority:", ["Low", "Medium", "High", "Urgent"])
+                deadline = st.date_input("Deadline:")
                 
-            submitted = st.form_submit_button("Lưu Công Việc")
+            submitted = st.form_submit_button("Save Task")
             if submitted:
                 if title.strip():
                     add_task(title.strip(), assignee, priority)
-                    st.success(f"Đã tạo task: {title}")
+                    st.success(f"Task created: {title}")
                     st.rerun()
                 else:
-                    st.error("Vui lòng nhập tên công việc!")
+                    st.error("Please enter a task title!")
 
-    st.subheader("Bảng trạng thái công việc (Board View)")
+    st.subheader("Kanban Board View")
     col_todo, col_inprog, col_done = st.columns(3)
 
     with col_todo:
-        st.info("📌 CẦN LÀM (TO-DO)")
+        st.info("📌 TO-DO")
         todo_tasks = df_tasks[df_tasks["status"] == "To-do"]
         for _, t in todo_tasks.iterrows():
-            st.markdown(f"**{t['title']}**\n- 👤 {t['assignee']}\n- 🚨 Ưu tiên: {t['priority']}")
-            if st.button("Bắt đầu làm ➡️", key=f"start_{t['id']}"):
+            st.markdown(f"**{t['title']}**\n- 👤 {t['assignee']}\n- 🚨 Priority: {t['priority']}")
+            if st.button("Start ➡️", key=f"start_{t['id']}"):
                 update_task_status(t['id'], "In Progress")
                 st.rerun()
 
     with col_inprog:
-        st.warning("⏳ ĐANG LÀM (IN PROGRESS)")
+        st.warning("⏳ IN PROGRESS")
         inprog_tasks = df_tasks[df_tasks["status"] == "In Progress"]
         for _, t in inprog_tasks.iterrows():
-            st.markdown(f"**{t['title']}**\n- 👤 {t['assignee']}\n- 🚨 Ưu tiên: {t['priority']}")
-            if st.button("Hoàn thành ✅", key=f"done_{t['id']}"):
+            st.markdown(f"**{t['title']}**\n- 👤 {t['assignee']}\n- 🚨 Priority: {t['priority']}")
+            if st.button("Complete ✅", key=f"done_{t['id']}"):
                 update_task_status(t['id'], "Done")
                 st.rerun()
 
     with col_done:
-        st.success("🎉 HOÀN THÀNH (DONE)")
+        st.success("🎉 DONE")
         done_tasks = df_tasks[df_tasks["status"] == "Done"]
         for _, t in done_tasks.iterrows():
             st.markdown(f"**~{t['title']}~**\n- 👤 {t['assignee']}")
 
-# --- 2. MODULE: QUẢN LÝ THÀNH VIÊN ---
-elif menu == "👤 Thành viên & Hồ sơ":
-    st.title("👤 Quản lý Tài khoản & Nhân sự")
-    
+# --- 2. MODULE: TEAM & MEMBERS ---
+elif menu == "👤 Team & Members":
+    st.title("👤 Team & User Management")
     col_add, col_del = st.columns(2)
     
     with col_add:
-        with st.expander("➕ Thêm thành viên mới", expanded=True):
+        with st.expander("➕ Add New Member", expanded=True):
             with st.form("add_user_form"):
-                u_name = st.text_input("Họ và Tên:")
-                u_role = st.selectbox("Vai trò:", ["Admin", "Manager", "Member", "Guest"])
-                u_status = st.selectbox("Trạng thái:", ["Online", "Offline", "Busy"])
+                u_name = st.text_input("Full Name:")
+                u_role = st.selectbox("Role:", ["Admin", "Manager", "Member", "Guest"])
+                u_status = st.selectbox("Status:", ["Online", "Offline", "Busy"])
                 
-                if st.form_submit_button("Thêm thành viên"):
+                if st.form_submit_button("Add Member"):
                     if u_name.strip():
                         if add_user(u_name.strip(), u_role, u_status):
-                            st.success(f"Đã thêm: {u_name}")
+                            st.success(f"Added member: {u_name}")
                             st.rerun()
                         else:
-                            st.error("Tên thành viên này đã tồn tại trong CSDL!")
+                            st.error("This member already exists!")
                     else:
-                        st.error("Vui lòng nhập họ tên!")
+                        st.error("Please enter a name!")
 
     with col_del:
-        with st.expander("🗑️ Xóa thành viên", expanded=True):
+        with st.expander("🗑️ Delete Member", expanded=True):
             if not df_users.empty:
-                user_to_delete = st.selectbox("Chọn thành viên muốn xóa:", df_users["name"].tolist())
-                st.warning(f"⚠️ Các task của **{user_to_delete}** sẽ tự động chuyển thành 'Chưa phân công'.")
+                user_to_delete = st.selectbox("Select member to delete:", df_users["name"].tolist())
+                st.warning(f"⚠️ Tasks assigned to **{user_to_delete}** will be set to 'Unassigned'.")
                 
-                if st.button("Xóa thành viên này", type="primary"):
+                if st.button("Delete this member", type="primary"):
                     delete_user(user_to_delete)
-                    st.success(f"Đã xóa thành viên '{user_to_delete}'!")
+                    st.success(f"Deleted '{user_to_delete}' successfully!")
                     st.rerun()
             else:
-                st.info("Hiện không có thành viên nào.")
+                st.info("No members found.")
 
     st.divider()
-    st.subheader("Danh sách nhân sự hiện tại:")
+    st.subheader("Current Team Roster:")
     if not df_users.empty:
         st.dataframe(df_users, use_container_width=True)
     else:
-        st.write("Chưa có thành viên nào trong CSDL.")
+        st.write("No members in database.")
 
-# --- 3. MODULE: BÁO CÁO & THỐNG KÊ ---
-elif menu == "📊 Báo cáo & Thống kê":
-    st.title("📊 Báo cáo Hiệu suất & Phân tích")
-    
+# --- 3. MODULE: REPORTS & ANALYTICS ---
+elif menu == "📊 Reports & Analytics":
+    st.title("📊 Performance & Analytics")
     if not df_tasks.empty:
         m1, m2, m3 = st.columns(3)
-        m1.metric("Tổng số việc", len(df_tasks))
-        m2.metric("Việc đã hoàn thành", len(df_tasks[df_tasks["status"] == "Done"]))
-        m3.metric("Việc đang làm", len(df_tasks[df_tasks["status"] == "In Progress"]))
+        m1.metric("Total Tasks", len(df_tasks))
+        m2.metric("Completed Tasks", len(df_tasks[df_tasks["status"] == "Done"]))
+        m3.metric("Tasks In Progress", len(df_tasks[df_tasks["status"] == "In Progress"]))
 
         st.divider()
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("Tiến độ công việc")
-            fig_pie = px.pie(df_tasks, names="status", title="Tỷ lệ hoàn thành công việc", hole=0.4)
+            st.subheader("Task Completion Status")
+            fig_pie = px.pie(df_tasks, names="status", title="Task Status Ratio", hole=0.4)
             st.plotly_chart(fig_pie, use_container_width=True)
 
         with col2:
-            st.subheader("Khối lượng công việc theo nhân viên")
-            fig_bar = px.bar(df_tasks, x="assignee", color="status", title="Số task mỗi người phụ trách")
+            st.subheader("Workload by Member")
+            fig_bar = px.bar(df_tasks, x="assignee", color="status", title="Assigned Tasks per Member")
             st.plotly_chart(fig_bar, use_container_width=True)
     else:
-        st.info("Chưa có dữ liệu công việc để báo cáo.")
+        st.info("No task data available for reports.")
 
-# --- 4. MODULE: ĐẾM GIỜ LÀM VIỆC ---
-elif menu == "⏱️ Đếm giờ làm việc":
-    st.title("⏱️ Theo dõi Thời gian (Time Tracking)")
-    
+# --- 4. MODULE: TIME TRACKER ---
+elif menu == "⏱️ Time Tracker":
+    st.title("⏱️ Time Tracking")
     task_list = df_tasks["title"].tolist() if not df_tasks.empty else []
     if task_list:
-        selected_task = st.selectbox("Chọn task đang làm:", task_list)
+        selected_task = st.selectbox("Select task to work on:", task_list)
         col_btn1, col_btn2 = st.columns([1, 4])
         with col_btn1:
-            start = st.button("▶️ BẮT ĐẦU ĐẾM GIỜ")
+            start = st.button("▶️ START TIMER")
         with col_btn2:
-            stop = st.button("⏹️ KẾT THÚC")
+            stop = st.button("⏹️ STOP TIMER")
             
         if start:
-            st.success(f"Đang đếm giờ cho: **{selected_task}** từ lúc {datetime.now().strftime('%H:%M:%S')}")
+            st.success(f"Timer started for: **{selected_task}** at {datetime.now().strftime('%H:%M:%S')}")
         if stop:
-            st.info("Đã lưu lại thời gian làm việc!")
+            st.info("Work time saved successfully!")
     else:
-        st.info("Vui lòng tạo ít nhất 1 công việc trước khi đếm giờ.")
+        st.info("Please create at least one task before tracking time.")
